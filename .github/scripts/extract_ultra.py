@@ -1,66 +1,46 @@
 import time
-import pywinauto
-from pywinauto import Desktop, Application
-import pytesseract
-from PIL import ImageGrab
+from pywinauto import Application
 import re
-import sys
 
 print("=== DEBUG CONTROL IDENTIFIERS ===")
 
 try:
-    # Kết nối với UltraViewer window (timeout dài hơn)
+    # Kết nối window với timeout dài
     app = Application(backend="uia").connect(title_re=".*UltraViewer.*", timeout=120)
     dlg = app.top_window()
     print("Connected to window:", dlg.window_text())
 
-    # Dump controls chi tiết
-    print(dlg.print_control_identifiers())
+    # Dump full controls (để log thấy rõ)
+    dlg.print_control_identifiers()
 
-    # Thử lấy Edit controls trực tiếp (ID thường ở Edit đầu)
-    edits = dlg.child_window(control_type="Edit")
-    if edits.exists():
-        id_text = edits.window_text().strip()
-        print("Direct Edit text (possible ID):", id_text)
+    # Parse từ output của print_control_identifiers() – tìm Pane/Edit có title là số (ID 9 chữ số, Pass 5 chữ số)
+    # Vì print_control_identifiers() in ra stdout, ta capture và parse (hoặc duyệt tree)
 
-    # Nếu không, fallback OCR toàn màn hình
-    print("Thử fallback OCR...")
-    time.sleep(5)  # Chờ UI ổn định
-    screenshot = ImageGrab.grab()
-    screenshot.save("screen_capture.png")  # Lưu để debug nếu cần
-    ocr_text = pytesseract.image_to_string(screenshot, lang='vie+eng')  # Hỗ trợ tiếng Việt
-    print("OCR text từ màn hình:\n", ocr_text)
+    # Duyệt tất cả Pane/Edit để tìm title chứa ID/Pass
+    id_found = "Không lấy được"
+    pass_found = "Không lấy được"
 
-    # Parse ID và Pass từ OCR text (regex linh hoạt hơn)
-    id_match = re.search(r'ID.*?\b(\d{3}\s*\d{3}\s*\d{3})\b', ocr_text, re.IGNORECASE | re.DOTALL)
-    pass_match = re.search(r'(Mat khdu|Password|MatKhau).*?\b(\d{4,6})\b', ocr_text, re.IGNORECASE | re.DOTALL)
+    # Duyệt children (Pane chứa ID/Pass thường là Pane với title số)
+    for child in dlg.descendants():
+        try:
+            title = child.window_text().strip()
+            if re.match(r'^\d{3}\s*\d{3}\s*\d{3}$', title):  # ID format 9 số + space
+                id_found = title.replace(" ", "")
+                print(f"Found ID in Pane/Edit title: {id_found}")
+            elif re.match(r'^\d{4,6}$', title):  # Pass format 4-6 số
+                pass_found = title
+                print(f"Found Password in Pane/Edit title: {pass_found}")
+        except:
+            pass
 
-    extracted_id = id_match.group(1).replace(" ", "") if id_match else "Không lấy được"
-    extracted_pass = pass_match.group(2) if pass_match else "Không lấy được"
+    # Nếu không tìm thấy từ descendants, fallback parse từ log text (nhưng tốt nhất dùng tree)
 
-    print(f"UltraViewer_ID: {extracted_id}")
-    print(f"UltraViewer_Password: {extracted_pass}")
+    print(f"UltraViewer_ID: {id_found}")
+    print(f"UltraViewer_Password: {pass_found}")
 
 except Exception as e:
     print("LỖI pywinauto:", str(e))
-    # Fallback OCR nếu pywinauto fail
-    try:
-        print("Thử fallback OCR...")
-        screenshot = ImageGrab.grab()
-        ocr_text = pytesseract.image_to_string(screenshot, lang='vie+eng')
-        print("OCR text từ màn hình:\n", ocr_text)
-
-        id_match = re.search(r'ID.*?\b(\d{3}\s*\d{3}\s*\d{3})\b', ocr_text, re.IGNORECASE | re.DOTALL)
-        pass_match = re.search(r'(Mat khdu|Password|MatKhau).*?\b(\d{4,6})\b', ocr_text, re.IGNORECASE | re.DOTALL)
-
-        extracted_id = id_match.group(1).replace(" ", "") if id_match else "Không lấy được"
-        extracted_pass = pass_match.group(2) if pass_match else "Không lấy được"
-
-        print(f"UltraViewer_ID: {extracted_id}")
-        print(f"UltraViewer_Password: {extracted_pass}")
-    except Exception as ocr_e:
-        print("OCR cũng fail:", str(ocr_e))
-        print("UltraViewer_ID: Không lấy được")
-        print("UltraViewer_Password: Không lấy được")
+    print("UltraViewer_ID: Không lấy được")
+    print("UltraViewer_Password: Không lấy được")
 
 print("=== END DEBUG ===")
