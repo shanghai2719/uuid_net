@@ -2,38 +2,46 @@ import time
 from pywinauto import Application
 import re
 
-print("=== DEBUG CONTROL IDENTIFIERS ===")
+print("=== DEBUG ULTRAVIEWER EXTRACTION START ===")
 
 try:
-    # Kết nối window với timeout dài
-    app = Application(backend="uia").connect(title_re=".*UltraViewer.*", timeout=120)
+    app = Application(backend="uia").connect(title_re=".*UltraViewer.*", timeout=180)
     dlg = app.top_window()
     print("Connected to window:", dlg.window_text())
 
-    # Dump full controls (để log thấy rõ)
+    # Dump controls
     dlg.print_control_identifiers()
 
-    # Parse từ output của print_control_identifiers() – tìm Pane/Edit có title là số (ID 9 chữ số, Pass 5 chữ số)
-    # Vì print_control_identifiers() in ra stdout, ta capture và parse (hoặc duyệt tree)
-
-    # Duyệt tất cả Pane/Edit để tìm title chứa ID/Pass
     id_found = "Không lấy được"
     pass_found = "Không lấy được"
 
-    # Duyệt children (Pane chứa ID/Pass thường là Pane với title số)
+    # Duyệt tất cả descendants để tìm title chứa ID/Pass
     for child in dlg.descendants():
         try:
             title = child.window_text().strip()
-            if re.match(r'^\d{3}\s*\d{3}\s*\d{3}$', title):  # ID format 9 số + space
-                id_found = title.replace(" ", "")
-                print(f"Found ID in Pane/Edit title: {id_found}")
-            elif re.match(r'^\d{4,6}$', title):  # Pass format 4-6 số
-                pass_found = title
-                print(f"Found Password in Pane/Edit title: {pass_found}")
+            if title:
+                print(f"Control title found: '{title}'")
+                # ID: 9 chữ số (có space hoặc không)
+                if re.search(r'\b\d{3}\s*\d{3}\s*\d{3}\b', title):
+                    id_found = re.sub(r'\s+', '', title)
+                    print(f"→ ID extracted: {id_found}")
+                # Pass: 4-6 chữ số
+                elif re.match(r'^\d{4,6}$', title):
+                    pass_found = title
+                    print(f"→ Password extracted: {pass_found}")
         except:
             pass
 
-    # Nếu không tìm thấy từ descendants, fallback parse từ log text (nhưng tốt nhất dùng tree)
+    # Fallback toàn bộ text nếu chưa tìm thấy
+    if id_found == "Không lấy được" or pass_found == "Không lấy được":
+        all_text = " ".join([c.window_text().strip() for c in dlg.descendants() if c.window_text().strip()])
+        print("Fallback all text:", all_text)
+        id_match = re.search(r'(\d{3}\s*\d{3}\s*\d{3})', all_text)
+        pass_match = re.search(r'\b(\d{4,6})\b', all_text)
+        if id_match:
+            id_found = id_match.group(1).replace(" ", "")
+        if pass_match:
+            pass_found = pass_match.group(1)
 
     print(f"UltraViewer_ID: {id_found}")
     print(f"UltraViewer_Password: {pass_found}")
@@ -43,4 +51,4 @@ except Exception as e:
     print("UltraViewer_ID: Không lấy được")
     print("UltraViewer_Password: Không lấy được")
 
-print("=== END DEBUG ===")
+print("=== DEBUG ULTRAVIEWER EXTRACTION END ===")
