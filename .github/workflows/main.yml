@@ -1,4 +1,4 @@
-name: UltraViewer 20 Jobs Parallel + Telegram + KeepAlive
+name: UltraViewer 20 VMs + Screenshot + Send to Telegram
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     - cron: '0 */6 * * *'
 
 jobs:
-  run-ultraviewer:
+  capture-ultraviewer:
     runs-on: windows-2022
     strategy:
       matrix:
@@ -15,8 +15,6 @@ jobs:
       fail-fast: false
 
     env:
-      PYTHONIOENCODING: utf-8
-      PYTHONUTF8: 1
       TOKEN: "8416315798:AAGS8j2dQi9Q0qTXpVHMYOJ83ye2Q0wjLNI"
       CHAT_ID: "6229578354"
       VM_ID: "VM-${{ matrix.vm }}"
@@ -25,83 +23,66 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install Python + pywinauto
-        shell: pwsh
-        run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force
-          iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-          choco install python311 -y --force
-          python -m pip install --upgrade pip
-          python -m pip install pywinauto
-          Write-Output "Python + pywinauto installed"
-
       - name: Install UltraViewer
         shell: pwsh
         run: |
-          Invoke-WebRequest https://www.ultraviewer.net/vi/UltraViewer_setup_6.6_vi.exe -OutFile ultra.exe
+          Invoke-WebRequest https://www.ultraviewer.net/vi/UltraViewer_setup_6.6_vi.exe -OutFile ultra.exe -UseBasicParsing
           Start-Process ultra.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
           Write-Output "UltraViewer installed on $env:VM_ID"
 
-      - name: Run UltraViewer
+      - name: Run UltraViewer (mở tab/app)
         shell: pwsh
         run: |
           $exePath = "${env:ProgramFiles(x86)}\UltraViewer\UltraViewer_Desktop.exe"
           if (-Not (Test-Path $exePath)) { $exePath = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe" }
           if (Test-Path $exePath) {
             Start-Process -FilePath $exePath -NoNewWindow
-            Write-Output "UltraViewer started on $env:VM_ID: $exePath"
-            Start-Sleep -Seconds 120
+            Write-Output "Đã mở UltraViewer trên $env:VM_ID"
+            Start-Sleep -Seconds 120  # Chờ 2 phút để UI load, ID/Pass hiển thị
           } else {
-            Write-Output "UltraViewer not found on $env:VM_ID"
+            Write-Output "Không tìm thấy exe trên $env:VM_ID"
           }
 
-      - name: Extract ID PASS
+      - name: Chụp ảnh màn hình VM
         shell: pwsh
         run: |
-          $scriptPath = "$env:GITHUB_WORKSPACE\.github\scripts\extract_ultra.py"
-          $outputFile = "ultra_output_$env:VM_ID.txt"
-          if (Test-Path $scriptPath) {
-            python $scriptPath > $outputFile 2>&1
-            Get-Content $outputFile
+          Add-Type -AssemblyName System.Drawing
+          $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
+          $screenshotPath = "screenshot_$env:VM_ID.png"
+          $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+          $graphics.Dispose()
+          $bitmap.Dispose()
+          Write-Output "Đã chụp màn hình: $screenshotPath (kích thước: $(Get-Item $screenshotPath).Length bytes)"
+
+      - name: Gửi ảnh màn hình lên Telegram (sendPhoto)
+        shell: pwsh
+        run: |
+          $screenshotPath = "screenshot_$env:VM_ID.png"
+          if (Test-Path $screenshotPath) {
+            $caption = "UltraViewer VM - $env:VM_ID / 20`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC`nMàn hình hiện tại (có thể đen nếu headless)`nID/Pass xem trong UI nếu remote được."
+            
+            $form = @{
+              chat_id = $env:CHAT_ID
+              caption = $caption
+              photo   = Get-Item $screenshotPath
+            }
+            
+            try {
+              Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TOKEN/sendPhoto" -Method Post -Form $form
+              Write-Output "Đã gửi ảnh màn hình lên Telegram cho $env:VM_ID"
+            } catch {
+              Write-Output "Lỗi gửi ảnh: $($_.Exception.Message)"
+            }
           } else {
-            "Script not found on $env:VM_ID" | Out-File $outputFile
+            Write-Output "Không tìm thấy ảnh chụp trên $env:VM_ID"
           }
 
-      - name: Send Telegram
+      - name: Hold 6 hours để giữ VM sống
         shell: pwsh
         run: |
-          $outputFile = "ultra_output_$env:VM_ID.txt"
-          $output = Get-Content $outputFile -Raw -ErrorAction SilentlyContinue
-          if (-not $output) { $output = "No output on $env:VM_ID" }
-
-          $id = "Không lấy được"
-          $pass = "Không lấy được"
-          if ($output -match 'UltraViewer_ID:\s*(\S+)') { $id = $matches[1].Trim() }
-          if ($output -match 'UltraViewer_Password:\s*(\S+)') { $pass = $matches[1].Trim() }
-
-          $msg = "UltraViewer - $env:VM_ID / 20 VMs`n"
-          $msg += "Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC`n"
-          $msg += "ID: $id`n"
-          $msg += "PASS: $pass`n`n"
-          $msg += "Debug pywinauto:`n``````$output``````"
-
-          $body = @{
-            chat_id = $env:CHAT_ID
-            text = $msg
-            parse_mode = "Markdown"
-          }
-          $json = $body | ConvertTo-Json -Depth 5 -Compress
-
-          try {
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TOKEN/sendMessage" -Method Post -Body $json -ContentType "application/json"
-            Write-Output "Telegram sent for $env:VM_ID"
-          } catch {
-            Write-Output "Telegram error for $env:VM_ID: $($_.Exception.Message)"
-          }
-
-      - name: Hold 6 hours
-        shell: pwsh
-        run: |
-          Write-Output "Holding $env:VM_ID for 6 hours..."
+          Write-Output "Hold $env:VM_ID 6 giờ..."
           Start-Sleep -Seconds 21600
-          Write-Output "$env:VM_ID finished"
+          Write-Output "$env:VM_ID kết thúc hold"
