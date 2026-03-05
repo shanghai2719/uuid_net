@@ -1,4 +1,4 @@
-name: UltraViewer 20 VMs + Screenshot + Send to Telegram
+name: UltraViewer 20 VMs + Registry Dump + Telegram (No Screenshot)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     - cron: '0 */6 * * *'
 
 jobs:
-  capture-ultraviewer:
+  ultra-20vms:
     runs-on: windows-2022
     strategy:
       matrix:
@@ -20,69 +20,49 @@ jobs:
       VM_ID: "VM-${{ matrix.vm }}"
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install UltraViewer
         shell: pwsh
         run: |
           Invoke-WebRequest https://www.ultraviewer.net/vi/UltraViewer_setup_6.6_vi.exe -OutFile ultra.exe -UseBasicParsing
           Start-Process ultra.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
-          Write-Output "UltraViewer installed on $env:VM_ID"
 
-      - name: Run UltraViewer (mở tab/app)
+      - name: Run UltraViewer
         shell: pwsh
         run: |
-          $exePath = "${env:ProgramFiles(x86)}\UltraViewer\UltraViewer_Desktop.exe"
-          if (-Not (Test-Path $exePath)) { $exePath = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe" }
-          if (Test-Path $exePath) {
-            Start-Process -FilePath $exePath -NoNewWindow
-            Write-Output "Đã mở UltraViewer trên $env:VM_ID"
-            Start-Sleep -Seconds 120  # Chờ 2 phút để UI load, ID/Pass hiển thị
-          } else {
-            Write-Output "Không tìm thấy exe trên $env:VM_ID"
+          $exe = "${env:ProgramFiles(x86)}\UltraViewer\UltraViewer_Desktop.exe"
+          if (-Not (Test-Path $exe)) { $exe = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe" }
+          if (Test-Path $exe) {
+            Start-Process $exe -NoNewWindow
+            Start-Sleep -Seconds 120
           }
 
-      - name: Chụp ảnh màn hình VM
+      - name: Dump Registry để lấy ID
         shell: pwsh
         run: |
-          Add-Type -AssemblyName System.Drawing
-          $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-          $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-          $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $screen.Size)
-          $screenshotPath = "screenshot_$env:VM_ID.png"
-          $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-          $graphics.Dispose()
-          $bitmap.Dispose()
-          Write-Output "Đã chụp màn hình: $screenshotPath (kích thước: $(Get-Item $screenshotPath).Length bytes)"
-
-      - name: Gửi ảnh màn hình lên Telegram (sendPhoto)
-        shell: pwsh
-        run: |
-          $screenshotPath = "screenshot_$env:VM_ID.png"
-          if (Test-Path $screenshotPath) {
-            $caption = "UltraViewer VM - $env:VM_ID / 20`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC`nMàn hình hiện tại (có thể đen nếu headless)`nID/Pass xem trong UI nếu remote được."
-            
-            $form = @{
-              chat_id = $env:CHAT_ID
-              caption = $caption
-              photo   = Get-Item $screenshotPath
-            }
-            
-            try {
-              Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TOKEN/sendPhoto" -Method Post -Form $form
-              Write-Output "Đã gửi ảnh màn hình lên Telegram cho $env:VM_ID"
-            } catch {
-              Write-Output "Lỗi gửi ảnh: $($_.Exception.Message)"
-            }
+          $output = "ultra_$env:VM_ID.txt"
+          reg export "HKCU\Software\UltraViewer" reg.txt /y 2>$null
+          if (Test-Path reg.txt) {
+            $content = Get-Content reg.txt -Raw
+            $id = if ($content -match '\b(\d{3}\s*\d{3}\s*\d{3})\b') { $matches[1].Replace(" ","") } else { "Không tìm thấy ID" }
+            "ID: $id`nFull reg:`n$content" | Out-File $output
           } else {
-            Write-Output "Không tìm thấy ảnh chụp trên $env:VM_ID"
+            "No reg key" | Out-File $output
           }
 
-      - name: Hold 6 hours để giữ VM sống
+      - name: Gửi Telegram (text + ID)
         shell: pwsh
         run: |
-          Write-Output "Hold $env:VM_ID 6 giờ..."
-          Start-Sleep -Seconds 21600
-          Write-Output "$env:VM_ID kết thúc hold"
+          $file = "ultra_$env:VM_ID.txt"
+          $content = Get-Content $file -Raw -EA SilentlyContinue
+          $id = if ($content -match 'ID:\s*(\S+)') { $matches[1] } else { "Không lấy được" }
+
+          $msg = "UltraViewer VM $env:VM_ID / 20`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`nID: $id`n`nDump:`n$content`nRemote bằng ID nếu cần."
+
+          $body = @{chat_id=$env:CHAT_ID; text=$msg; parse_mode="Markdown"} | ConvertTo-Json -Compress
+          try { Invoke-RestMethod "https://api.telegram.org/bot$env:TOKEN/sendMessage" -Method Post -Body $body -ContentType "application/json" } catch { Write-Output "Lỗi: $($_.Exception.Message)" }
+
+      - name: Hold 6h
+        shell: pwsh
+        run: Start-Sleep -Seconds 21600
