@@ -1,4 +1,4 @@
-name: UltraViewer Auto + Telegram + KeepAlive (Fixed 2026)
+name: UltraViewer 20 Jobs Parallel + Telegram + KeepAlive
 
 on:
   workflow_dispatch:
@@ -8,17 +8,24 @@ on:
 jobs:
   run-ultraviewer:
     runs-on: windows-2022
+    strategy:
+      matrix:
+        vm: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
+      max-parallel: 20
+      fail-fast: false
+
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: 1
       TOKEN: "8416315798:AAGS8j2dQi9Q0qTXpVHMYOJ83ye2Q0wjLNI"
       CHAT_ID: "6229578354"
+      VM_ID: "VM-${{ matrix.vm }}"
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install Python + pywinauto (OCR bỏ vì fail PATH)
+      - name: Install Python + pywinauto
         shell: pwsh
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
@@ -33,55 +40,50 @@ jobs:
         run: |
           Invoke-WebRequest https://www.ultraviewer.net/vi/UltraViewer_setup_6.6_vi.exe -OutFile ultra.exe
           Start-Process ultra.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
-          Write-Output "UltraViewer installed"
+          Write-Output "UltraViewer installed on $env:VM_ID"
 
-      - name: Run UltraViewer & chờ load ID/Pass
+      - name: Run UltraViewer
         shell: pwsh
         run: |
           $exePath = "${env:ProgramFiles(x86)}\UltraViewer\UltraViewer_Desktop.exe"
-          if (-Not (Test-Path $exePath)) {
-            $exePath = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe"
-          }
+          if (-Not (Test-Path $exePath)) { $exePath = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe" }
           if (Test-Path $exePath) {
             Start-Process -FilePath $exePath -NoNewWindow
-            Write-Output "UltraViewer started tại: $exePath"
-            Start-Sleep -Seconds 120  # Chờ 2 phút để UI load đầy đủ ID/Pass
+            Write-Output "UltraViewer started on $env:VM_ID: $exePath"
+            Start-Sleep -Seconds 120
           } else {
-            Write-Output "UltraViewer executable not found"
+            Write-Output "UltraViewer not found on $env:VM_ID"
           }
 
-      - name: Extract ID PASS (dùng pywinauto descendants parse title)
+      - name: Extract ID PASS
         shell: pwsh
         run: |
           $scriptPath = "$env:GITHUB_WORKSPACE\.github\scripts\extract_ultra.py"
+          $outputFile = "ultra_output_$env:VM_ID.txt"
           if (Test-Path $scriptPath) {
-            python $scriptPath > ultra_output.txt 2>&1
-            Get-Content ultra_output.txt  # In full debug ra console
+            python $scriptPath > $outputFile 2>&1
+            Get-Content $outputFile
           } else {
-            Write-Output "extract_ultra.py not found - add vào .github/scripts/"
+            "Script not found on $env:VM_ID" | Out-File $outputFile
           }
 
       - name: Send Telegram
         shell: pwsh
         run: |
-          $output = Get-Content ultra_output.txt -Raw -ErrorAction SilentlyContinue
-          if (-not $output) { $output = "No output from extract script" }
+          $outputFile = "ultra_output_$env:VM_ID.txt"
+          $output = Get-Content $outputFile -Raw -ErrorAction SilentlyContinue
+          if (-not $output) { $output = "No output on $env:VM_ID" }
 
           $id = "Không lấy được"
           $pass = "Không lấy được"
-          if ($output -match 'UltraViewer_ID:\s*(\S+)') {
-            $id = $matches[1].Trim()
-          }
-          if ($output -match 'UltraViewer_Password:\s*(\S+)') {
-            $pass = $matches[1].Trim()
-          }
+          if ($output -match 'UltraViewer_ID:\s*(\S+)') { $id = $matches[1].Trim() }
+          if ($output -match 'UltraViewer_Password:\s*(\S+)') { $pass = $matches[1].Trim() }
 
-          $msg = "UltraViewer GitHub Runner (Fixed Parse Title)`n"
+          $msg = "UltraViewer - $env:VM_ID / 20 VMs`n"
           $msg += "Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC`n"
-          $msg += "ID: $id `n"
-          $msg += "PASS: $pass `n`n"
-          $msg += "Full debug từ pywinauto (Pane titles):`n"
-          $msg += "```````n$output`n``````"
+          $msg += "ID: $id`n"
+          $msg += "PASS: $pass`n`n"
+          $msg += "Debug pywinauto:`n``````$output``````"
 
           $body = @{
             chat_id = $env:CHAT_ID
@@ -92,14 +94,14 @@ jobs:
 
           try {
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TOKEN/sendMessage" -Method Post -Body $json -ContentType "application/json"
-            Write-Output "Telegram sent OK"
+            Write-Output "Telegram sent for $env:VM_ID"
           } catch {
-            Write-Output "Telegram error: $($_.Exception.Message)"
+            Write-Output "Telegram error for $env:VM_ID: $($_.Exception.Message)"
           }
 
-      - name: Hold runner 6 hours
+      - name: Hold 6 hours
         shell: pwsh
         run: |
-          Write-Output "Holding runner for 6 hours..."
+          Write-Output "Holding $env:VM_ID for 6 hours..."
           Start-Sleep -Seconds 21600
-          Write-Output "Runner finished"
+          Write-Output "$env:VM_ID finished"
