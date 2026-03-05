@@ -1,41 +1,32 @@
-name: UltraViewer Auto 20 VMs + Telegram + KeepAlive
+name: UltraViewer Auto + Telegram + KeepAlive (Fixed 2026)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'  # Mỗi 6h spawn 20 VMs mới
+    - cron: '0 */6 * * *'
 
 jobs:
   run-ultraviewer:
     runs-on: windows-2022
-    strategy:
-      matrix:
-        instance: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]  # 20 máy riêng biệt
-      max-parallel: 20  # Chạy hết 20 cùng lúc (free plan max)
-      fail-fast: false  # Lỗi 1 cái không ảnh hưởng các cái khác
-
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: 1
       TOKEN: "8416315798:AAGS8j2dQi9Q0qTXpVHMYOJ83ye2Q0wjLNI"
       CHAT_ID: "6229578354"
-      MACHINE_ID: "VM-${{ matrix.instance }}"
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install Python + OCR
+      - name: Install Python + pywinauto (OCR bỏ vì fail PATH)
         shell: pwsh
         run: |
           Set-ExecutionPolicy Bypass -Scope Process -Force
           iex ((New-Object Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
           choco install python311 -y --force
           python -m pip install --upgrade pip
-          python -m pip install pywinauto pillow pytesseract
-          choco install tesseract -y
-          $env:Path += ";C:\Program Files\Tesseract-OCR"
-          Write-Output "Python + OCR installed"
+          python -m pip install pywinauto
+          Write-Output "Python + pywinauto installed"
 
       - name: Install UltraViewer
         shell: pwsh
@@ -44,7 +35,7 @@ jobs:
           Start-Process ultra.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
           Write-Output "UltraViewer installed"
 
-      - name: Run UltraViewer
+      - name: Run UltraViewer & chờ load ID/Pass
         shell: pwsh
         run: |
           $exePath = "${env:ProgramFiles(x86)}\UltraViewer\UltraViewer_Desktop.exe"
@@ -52,70 +43,63 @@ jobs:
             $exePath = "$env:ProgramFiles\UltraViewer\UltraViewer_Desktop.exe"
           }
           if (Test-Path $exePath) {
-            Start-Process -FilePath $exePath
-            Write-Output "UltraViewer started on $env:MACHINE_ID: $exePath"
-            Start-Sleep -Seconds 60  # Tăng lên 60s để UI load chắc chắn
-          }
-          else {
-            Write-Output "UltraViewer executable not found on $env:MACHINE_ID"
+            Start-Process -FilePath $exePath -NoNewWindow
+            Write-Output "UltraViewer started tại: $exePath"
+            Start-Sleep -Seconds 120  # Chờ 2 phút để UI load đầy đủ ID/Pass
+          } else {
+            Write-Output "UltraViewer executable not found"
           }
 
-      - name: Extract ID PASS
+      - name: Extract ID PASS (dùng pywinauto descendants parse title)
         shell: pwsh
         run: |
           $scriptPath = "$env:GITHUB_WORKSPACE\.github\scripts\extract_ultra.py"
-          $outputFile = "ultra_output_$env:MACHINE_ID.txt"
           if (Test-Path $scriptPath) {
-            python $scriptPath > $outputFile 2>&1
-            Get-Content $outputFile
-          }
-          else {
-            "extract_ultra.py not found on $env:MACHINE_ID" | Out-File $outputFile
+            python $scriptPath > ultra_output.txt 2>&1
+            Get-Content ultra_output.txt  # In full debug ra console
+          } else {
+            Write-Output "extract_ultra.py not found - add vào .github/scripts/"
           }
 
       - name: Send Telegram
         shell: pwsh
         run: |
-          $outputFile = "ultra_output_$env:MACHINE_ID.txt"
-          $output = Get-Content $outputFile -Raw -ErrorAction SilentlyContinue
-          if (-not $output) {
-            $output = "No output from $env:MACHINE_ID"
-          }
-          $id = "Unknown"
-          $pass = "Unknown"
-          if ($output -match 'UltraViewer_ID:\s*(.+)') {
+          $output = Get-Content ultra_output.txt -Raw -ErrorAction SilentlyContinue
+          if (-not $output) { $output = "No output from extract script" }
+
+          $id = "Không lấy được"
+          $pass = "Không lấy được"
+          if ($output -match 'UltraViewer_ID:\s*(\S+)') {
             $id = $matches[1].Trim()
           }
-          if ($output -match 'UltraViewer_Password:\s*(.+)') {
+          if ($output -match 'UltraViewer_Password:\s*(\S+)') {
             $pass = $matches[1].Trim()
           }
-          $msg = "UltraViewer GitHub Runner - $env:MACHINE_ID (1 trong 20 VMs)`n"
+
+          $msg = "UltraViewer GitHub Runner (Fixed Parse Title)`n"
           $msg += "Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') UTC`n"
           $msg += "ID: $id `n"
           $msg += "PASS: $pass `n`n"
-          $msg += "Debug đầy đủ:`n$output`n"
-          $msg += "Nếu ID/Pass sai → check log Actions của job này."
+          $msg += "Full debug từ pywinauto (Pane titles):`n"
+          $msg += "```````n$output`n``````"
+
           $body = @{
             chat_id = $env:CHAT_ID
             text = $msg
             parse_mode = "Markdown"
           }
           $json = $body | ConvertTo-Json -Depth 5 -Compress
+
           try {
-            Invoke-RestMethod `
-              -Uri "https://api.telegram.org/bot$env:TOKEN/sendMessage" `
-              -Method Post `
-              -Body $json `
-              -ContentType "application/json"
-            Write-Output "Telegram sent for $env:MACHINE_ID"
-          }
-          catch {
-            Write-Output "Telegram error for $env:MACHINE_ID: $($_.Exception.Message)"
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TOKEN/sendMessage" -Method Post -Body $json -ContentType "application/json"
+            Write-Output "Telegram sent OK"
+          } catch {
+            Write-Output "Telegram error: $($_.Exception.Message)"
           }
 
       - name: Hold runner 6 hours
         shell: pwsh
         run: |
-          Write-Output "Holding runner $env:MACHINE_ID for 6 hours..."
+          Write-Output "Holding runner for 6 hours..."
           Start-Sleep -Seconds 21600
-          Write-Output "Runner $env:MACHINE_ID finished"
+          Write-Output "Runner finished"
